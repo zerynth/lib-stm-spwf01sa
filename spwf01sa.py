@@ -88,9 +88,10 @@ def _handle_wind():
             _locksock.acquire()
             sk = _find_sock(skn)
             if sk is not None:
-                _sockets[sk.idx]=None
-                sk.has_data.set() # unblock recvs
-                sk.closed=True
+                sk.used=True
+                # _sockets[sk.idx]=None
+                # sk.has_data.set() # unblock recvs
+                # sk.closed=True
             _locksock.release()
         elif wcode==55: #pending data
             skn = int(line[22:23])
@@ -189,6 +190,8 @@ def _check(cmd,*query,data=None):
     flag,res = _command(cmd,*query,data=data)
     #print("_check_",flag)
     if not flag:
+        if "PING" in cmd:
+            return res
         raise IOError
     return res
 
@@ -211,7 +214,7 @@ def _command(cmd,*query,data=None):
     #    print("-->",y)
     return flag,res
 
-def set_baud(rst,ser,baud=115200,tobaud=9600):
+def set_baud(ser, rst ,baud=115200,tobaud=9600):
     pinMode(rst,OUTPUT)
     digitalWrite(rst,0)
     sleep(6)
@@ -324,6 +327,7 @@ class _sockdata():
         self.channel=None
         self.idx = idx
         self.closed=False
+        self.used=False
         self.buffer=bytearray()
 
 _sockets = [None]*8  # 8 sockets max
@@ -359,7 +363,7 @@ def close(sock):
         ss.has_data.set() #wake up blocked recv
         _sockets[sock]=None
     _locksock.release()
-    if ss.channel is not None:
+    if ss and ss.channel is not None:
         _command("AT+S.SOCKC",str(ss.channel))
 
 def sendto(sock,buf,addr,flags=0):
@@ -505,6 +509,13 @@ def recv_into(sock,buf,bufsize,flags=0,ofs=0):
         rr+=toread
         _locksock.release()
         #print("recv read",toread,tbr)
+        _locksock.acquire()
+        if len(sk.buffer) == 0 and sk.used and rr==bufsize:
+            # print("here")
+            _sockets[sk.idx]=None
+            sk.has_data.set() # unblock recvs
+            sk.closed=True
+        _locksock.release()
     return rr
 
 
@@ -548,6 +559,46 @@ def gethostbyname(hostname):
     res=_check("AT+S.PING",hostname)
     return res[-3][14:-2]
 
+
+DEF_BAUD = [9600, 19200, 38400, 57600, 115200]
+
+def get_baud(ser, rst):
+    pinMode(rst,OUTPUT)
+    baud = 0
+    s = None
+    for b in DEF_BAUD:
+        digitalWrite(rst,0)
+        sleep(6)
+        s = streams.serial(ser,baud=b,set_default=False)
+        digitalWrite(rst,1)
+        cnt=0
+        while cnt<10:
+            if not s.available():
+                cnt+=1
+                sleep(100)
+                continue
+            n = s.available()
+            l = s.read(n)
+            # print("@",l)
+            if "Poweron" in l or ":0:" in l:
+                # s.write("AT&V\r")
+                s.write("AT+S.GCFG=console1_speed\r")
+                cnt = 0
+                while cnt<10:
+                    if not s.available():
+                        cnt+=1
+                        sleep(100)
+                        continue
+                    line = s.readline()
+                    # print("@",line)
+                    if "console1_speed" in line:
+                        baud = int(line[20:])
+                        break     
+            break
+        if s:
+            s.close()
+            s = None
+    return baud
 
 # def select(rlist,wist,xlist,timeout):
 #     pass
